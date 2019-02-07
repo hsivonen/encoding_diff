@@ -8,28 +8,27 @@
 // except according to those terms.
 
 extern crate encoding_rs;
-extern crate libc;
 
 use encoding_rs::*;
 
 #[link(name = "Kernel32")]
 extern "system" {
-    fn MultiByteToWideChar(code_page: libc::c_uint,
-                           flags: libc::c_ulong,
+    fn MultiByteToWideChar(code_page: std::os::raw::c_uint,
+                           flags: std::os::raw::c_ulong,
                            src: *const u8,
-                           src_len: libc::c_int,
+                           src_len: std::os::raw::c_int,
                            dst: *mut u16,
-                           dst_len: libc::c_int)
-                           -> libc::c_int;
-    // fn WideCharToMultiByte(code_page: libc::c_uint,
-    //                        flags: libc::c_ulong,
-    //                        src: *const u16,
-    //                        src_len: libc::c_int,
-    //                        dst: *mut u8,
-    //                        dst_len: libc::c_int,
-    //                        replacement: *const u8,
-    //                        used_replacement: *mut bool)
-    //                        -> libc::c_int;
+                           dst_len: std::os::raw::c_int)
+                           -> std::os::raw::c_int;
+    fn WideCharToMultiByte(code_page: std::os::raw::c_uint,
+                           flags: std::os::raw::c_ulong,
+                           src: *const u16,
+                           src_len: std::os::raw::c_int,
+                           dst: *mut u8,
+                           dst_len: std::os::raw::c_int,
+                           replacement: *const u8,
+                           used_replacement: *mut bool)
+                           -> std::os::raw::c_int;
 }
 
 static SINGLE_BYTE: [(&'static Encoding, u16); 25] = [
@@ -89,7 +88,7 @@ fn compare_single_byte_encoding(encoding: &'static Encoding, code_page: u16) {
         assert_eq!(output_rs[2], 0x20);
         let point_rs = output_rs[1];
         unsafe {
-            let written = MultiByteToWideChar(code_page as libc::c_uint, 0, input.as_ptr(), input.len() as libc::c_int, output_win32.as_mut_ptr(), output_win32.len() as libc::c_int);
+            let written = MultiByteToWideChar(code_page as std::os::raw::c_uint, 0, input.as_ptr(), input.len() as std::os::raw::c_int, output_win32.as_mut_ptr(), output_win32.len() as std::os::raw::c_int);
             assert_eq!(written as usize, input.len());
         }
         assert_eq!(output_win32[0], 0x20);
@@ -121,7 +120,7 @@ fn compare_two_byte_encoding(encoding: &'static Encoding, code_page: u16) {
             assert_eq!(output_rs[2], 0x20);
             let point_rs = output_rs[1];
             let written_win32 = unsafe {
-                MultiByteToWideChar(code_page as libc::c_uint, 0, input.as_ptr(), input.len() as libc::c_int, output_win32.as_mut_ptr(), output_win32.len() as libc::c_int)
+                MultiByteToWideChar(code_page as std::os::raw::c_uint, 0, input.as_ptr(), input.len() as std::os::raw::c_int, output_win32.as_mut_ptr(), output_win32.len() as std::os::raw::c_int)
             };
             assert_eq!(output_win32[0], 0x20);
             assert_eq!(output_win32[written_win32 as usize - 1], 0x20);
@@ -148,6 +147,42 @@ fn compare_two_byte_encoding(encoding: &'static Encoding, code_page: u16) {
     }
 }
 
+fn two_byte_unmappable_mappables_impl(encoding: &'static Encoding, code_page: u16, bmp: u16) {
+    let input = [bmp; 1];
+    let mut output = [0u8; 4];
+    let mut had_unmappables = false;
+    let encoder_written = unsafe { WideCharToMultiByte(code_page as std::os::raw::c_uint, 0, input.as_ptr(), input.len() as std::os::raw::c_int, output.as_mut_ptr(), output.len() as std::os::raw::c_int, std::ptr::null(), &mut had_unmappables) };
+    if had_unmappables {
+        return;
+    }
+    let mut decoded = [0u16; 2];
+    let mut decoder = encoding.new_decoder_without_bom_handling();
+    let (result, read, written, had_errors) = decoder.decode_to_utf16(&output[..encoder_written as usize], &mut decoded[..], true);
+    if written == 1 && !had_errors && read == (encoder_written as usize) && result == CoderResult::InputEmpty {
+        return;
+    }
+    match encoder_written {
+        1 => {
+            println!("Code page {}: {:X} encodes to {:X} but does not decode to single code point per spec.", code_page, bmp, output[0]);
+        },
+        2 => {
+            println!("Code page {}: {:X} encodes to {:X} {:X} but does not decode to single code point per spec.", code_page, bmp, output[0], output[1]);
+        },
+        _ => {
+            println!("Code page {}: {:X} encodes a sequence of length {}.", code_page, bmp, encoder_written);
+        }
+    }
+}
+
+fn two_byte_unmappable_mappables(encoding: &'static Encoding, code_page: u16) {
+    for i in 0..0xD800u32 {
+        two_byte_unmappable_mappables_impl(encoding, code_page, i as u16);
+    }
+    for i in 0xE000..0x10000u32 {
+        two_byte_unmappable_mappables_impl(encoding, code_page, i as u16);
+    }
+}
+
 fn main() {
     for &(encoding, code_page) in &SINGLE_BYTE[..] {
         compare_single_byte_encoding(encoding, code_page);
@@ -155,5 +190,6 @@ fn main() {
     for &(encoding, code_page) in &TWO_BYTE[..] {
         compare_single_byte_encoding(encoding, code_page);
         compare_two_byte_encoding(encoding, code_page);
+        two_byte_unmappable_mappables(encoding, code_page);
     }
 }
